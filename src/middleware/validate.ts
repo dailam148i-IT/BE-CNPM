@@ -1,44 +1,44 @@
 /**
  * =============================================================================
- * VALIDATE.TS - Middleware xác thực dữ liệu đầu vào
+ * VALIDATE.TS - Middleware xác thực dữ liệu đầu vào (Zod)
  * =============================================================================
  * 
- * Middleware này sử dụng Joi để validate request body
+ * Middleware này sử dụng Zod để validate request body/params/query
  * 
- * TẠI SAO CẦN VALIDATE?
- * - Bảo vệ server khỏi dữ liệu xấu
- * - Tránh lỗi runtime (undefined, null)
- * - Phản hồi lỗi rõ ràng cho client
- * - Tự động ép kiểu (string → number)
+ * TẠI SAO DÙNG ZOD?
+ * - Nhẹ hơn Joi (~50KB vs ~150KB)
+ * - Native TypeScript (tự động infer types)
+ * - Dùng được cả Frontend và Backend
+ * - API đơn giản hơn
  * 
  * CÁCH DÙNG:
  *   import { validate } from '../middleware/validate';
- *   import { loginSchema } from './auth.validation';
+ *   import { loginSchema } from './auth.schema';
  *   
  *   router.post('/login', validate(loginSchema), controller.login);
  */
 
 import { Request, Response, NextFunction } from 'express';
-import Joi from 'joi';
+import { ZodSchema, ZodError } from 'zod';
 import { ValidationError } from './errorHandler.js';
 
 /**
  * VALIDATE MIDDLEWARE FACTORY
  * 
- * Tạo middleware validate dựa trên Joi schema
+ * Tạo middleware validate dựa trên Zod schema
  * 
- * @param schema - Joi schema để validate
+ * @param schema - Zod schema để validate
  * @returns Middleware function
  * 
  * Flow:
- * 1. Validate req.body với schema
- * 2. Nếu OK → gán giá trị đã được normalize vào req.body
+ * 1. safeParse req.body với schema
+ * 2. Nếu OK → gán giá trị đã được parse vào req.body
  * 3. Nếu lỗi → throw ValidationError với message chi tiết
  * 
  * @example
- * const schema = Joi.object({
- *   email: Joi.string().email().required(),
- *   password: Joi.string().min(6).required(),
+ * const schema = z.object({
+ *   email: z.string().email('Email không hợp lệ'),
+ *   password: z.string().min(6, 'Tối thiểu 6 ký tự'),
  * });
  * 
  * router.post('/login', validate(schema), (req, res) => {
@@ -46,34 +46,19 @@ import { ValidationError } from './errorHandler.js';
  *   const { email, password } = req.body;
  * });
  */
-export const validate = (schema: Joi.ObjectSchema) => {
+export const validate = (schema: ZodSchema) => {
   return (req: Request, _res: Response, next: NextFunction): void => {
-    // Validate request body
-    // Options:
-    // - abortEarly: false → Thu thập TẤT CẢ lỗi, không dừng ở lỗi đầu tiên
-    // - stripUnknown: true → Loại bỏ các field không có trong schema
-    const { error, value } = schema.validate(req.body, {
-      abortEarly: false,
-      stripUnknown: true,
-    });
+    // safeParse: Không throw error, trả về { success, data, error }
+    const result = schema.safeParse(req.body);
 
-    // Nếu có lỗi validation
-    if (error) {
-      // Lấy tất cả messages lỗi và join thành 1 string
-      // error.details = [{ message: '...' }, { message: '...' }]
-      const messages = error.details
-        .map((detail) => detail.message)
-        .join(', ');
-
-      // Throw ValidationError → được bắt bởi error handler
+    if (!result.success) {
+      // Format Zod errors thành message string
+      const messages = formatZodError(result.error);
       throw new ValidationError(messages);
     }
 
-    // Gán giá trị đã validate & normalize vào req.body
-    // Ví dụ: trim strings, convert types, etc.
-    req.body = value;
-
-    // Tiếp tục đến handler
+    // Gán giá trị đã validate & transform vào req.body
+    req.body = result.data;
     next();
   };
 };
@@ -87,21 +72,17 @@ export const validate = (schema: Joi.ObjectSchema) => {
  * // Validate :id phải là CUID
  * router.get('/users/:id', validateParams(idSchema), controller.getUser);
  */
-export const validateParams = (schema: Joi.ObjectSchema) => {
+export const validateParams = (schema: ZodSchema) => {
   return (req: Request, _res: Response, next: NextFunction): void => {
-    const { error, value } = schema.validate(req.params, {
-      abortEarly: false,
-    });
+    const result = schema.safeParse(req.params);
 
-    if (error) {
-      const messages = error.details
-        .map((detail) => detail.message)
-        .join(', ');
-
+    if (!result.success) {
+      const messages = formatZodError(result.error);
       throw new ValidationError(messages);
     }
 
-    req.params = value;
+    // Use type assertion since Zod parsed data matches expected structure
+    (req.params as Record<string, string>) = result.data as Record<string, string>;
     next();
   };
 };
@@ -115,55 +96,64 @@ export const validateParams = (schema: Joi.ObjectSchema) => {
  * // Validate pagination
  * router.get('/products', validateQuery(paginationSchema), controller.list);
  */
-export const validateQuery = (schema: Joi.ObjectSchema) => {
+export const validateQuery = (schema: ZodSchema) => {
   return (req: Request, _res: Response, next: NextFunction): void => {
-    const { error, value } = schema.validate(req.query, {
-      abortEarly: false,
-      stripUnknown: true,
-    });
+    const result = schema.safeParse(req.query);
 
-    if (error) {
-      const messages = error.details
-        .map((detail) => detail.message)
-        .join(', ');
-
+    if (!result.success) {
+      const messages = formatZodError(result.error);
       throw new ValidationError(messages);
     }
 
-    req.query = value;
+    // Use type assertion since Zod parsed data matches expected structure
+    Object.assign(req.query, result.data);
     next();
   };
 };
 
 /**
- * =============================================================================
- * COMMON VALIDATION SCHEMAS
- * =============================================================================
+ * FORMAT ZOD ERROR
  * 
- * Các schema dùng chung cho nhiều modules
+ * Chuyển ZodError thành string message dễ đọc
+ * 
+ * @param error - ZodError object
+ * @returns String message
+ * 
+ * VÍ DỤ:
+ *   Input: { issues: [{ path: ['email'], message: 'Invalid email' }] }
+ *   Output: "email: Invalid email"
  */
+function formatZodError(error: ZodError): string {
+  return error.issues
+    .map((issue) => {
+      const path = issue.path.join('.');
+      return path ? `${path}: ${issue.message}` : issue.message;
+    })
+    .join(', ');
+}
+
+// ============================================================================
+// COMMON VALIDATION SCHEMAS
+// ============================================================================
+import { z } from 'zod';
 
 /**
  * Schema cho ID parameter
  * CUID format: c + 24 ký tự alphanumeric
  */
-export const idParamSchema = Joi.object({
-  id: Joi.string()
-    .pattern(/^c[a-z0-9]{24}$/)
-    .required()
-    .messages({
-      'string.pattern.base': 'ID không hợp lệ',
-      'any.required': 'ID là bắt buộc',
-    }),
+export const idParamSchema = z.object({
+  id: z
+    .string()
+    .regex(/^c[a-z0-9]{24}$/, 'ID không hợp lệ'),
 });
 
 /**
  * Schema cho pagination query
  * ?page=1&limit=10&sort=createdAt&order=desc
  */
-export const paginationSchema = Joi.object({
-  page: Joi.number().integer().min(1).default(1),
-  limit: Joi.number().integer().min(1).max(100).default(10),
-  sort: Joi.string().default('createdAt'),
-  order: Joi.string().valid('asc', 'desc').default('desc'),
+export const paginationSchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(10),
+  sort: z.string().default('createdAt'),
+  order: z.enum(['asc', 'desc']).default('desc'),
 });

@@ -1,0 +1,20 @@
+# Dockerfile để build node_modules cho Linux hosting
+FROM node:20-slim
+
+# Install OpenSSL 1.1
+RUN apt-get update && apt-get install -y openssl libssl1.1 && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+COPY prisma ./prisma/
+
+# Install production dependencies
+RUN npm install --production
+
+# Generate Prisma Client for Linux
+RUN npx prisma generate
+
+# Output folder sẽ được copy ra
+CMD ["echo", "Build complete! Copy node_modules folder"]

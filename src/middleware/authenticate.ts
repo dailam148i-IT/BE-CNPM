@@ -3,16 +3,29 @@
  * AUTHENTICATE.TS - Middleware xác thực JWT
  * =============================================================================
  * 
- * Middleware này kiểm tra xem user đã đăng nhập chưa bằng cách:
- * 1. Lấy token từ header Authorization
- * 2. Verify token bằng secret key
- * 3. Gắn thông tin user vào req.user
+ * Middleware này đóng vai trò "Bảo vệ" các API endpoints.
+ * Nó đảm bảo chỉ những user đã đăng nhập (có token hợp lệ) mới được đi tiếp.
+ * 
+ * 🔄 FLOW HOẠT ĐỘNG:
+ *    [CLIENT]                  [SERVER - Middleware]                   [CONTROLLER]
+ *       |                               |                                   |
+ *       |-- Request + Token ----------> |                                   |
+ *       |                               | 1. Kiểm tra Header Authorization  |
+ *       |                               |    (Có "Bearer <token>" ko?)      |
+ *       |                               |                                   |
+ *       |                               | 2. Verify Token (JWT)             |
+ *       |                               |    (Chữ ký đúng? Có hết hạn ko?)  |
+ *       |                               |                                   |
+ *       |      [Token Lỗi/Thiếu]        | 3. Nếu OK: Gắn user vào req       |
+ *       |<------- Trả về 401 -----------|    (req.user = payload)           |
+ *       |                               |                                   |
+ *       |                               | 4. Next() ----------------------> | Xử lý logic
  * 
  * CÁCH DÙNG:
  *   // Protected route - chỉ user đã login mới access được
  *   router.get('/profile', authenticate, controller.getProfile);
  *   
- *   // Admin only route
+ *   // Admin only route (kết hợp với authorize)
  *   router.delete('/users/:id', authenticate, authorize('ADMIN'), controller.delete);
  */
 
@@ -23,11 +36,12 @@ import { UnauthorizedError, ForbiddenError } from './errorHandler.js';
 /**
  * Mở rộng Request type của Express
  * 
- * Thêm property 'user' vào Request để lưu thông tin user đã đăng nhập
+ * TypeScript mặc định không biết `req.user` là gì.
+ * Ta cần "merge" thêm definition vào interface Request của Express.
  * 
- * declare global: Khai báo trong global scope
+ * declare global: Khai báo trong global scope (toàn dự án nhìn thấy)
  * namespace Express: Mở rộng Express module
- * interface Request: Thêm properties vào Request
+ * interface Request: Thêm properties options vào Request
  */
 declare global {
   namespace Express {
@@ -42,28 +56,23 @@ declare global {
 
 /**
  * JWT Payload type
- * Dữ liệu được encode trong token
+ * Cấu trúc dữ liệu nằm bên trong Token sau khi giải mã
  */
 interface JwtPayload {
   userId: string;
   role: string;
-  iat?: number;  // Issued at (thời gian tạo token)
-  exp?: number;  // Expiration (thời gian hết hạn)
+  iat?: number;  // Issued at (Thời điểm tạo token - Unix timestamp)
+  exp?: number;  // Expiration (Thời điểm hết hạn - Unix timestamp)
 }
 
 /**
  * AUTHENTICATE MIDDLEWARE
  * 
- * Kiểm tra và verify JWT access token
+ * Nhiệm vụ:
+ * - Chặn request không có token hoặc token rởm
+ * - Cho phép request hợp lệ đi qua và đính kèm thông tin "Ai vửa gọi?"
  * 
- * Flow:
- * 1. Lấy Authorization header
- * 2. Kiểm tra format "Bearer <token>"
- * 3. Verify token bằng secret
- * 4. Gắn payload vào req.user
- * 5. Gọi next() để tiếp tục
- * 
- * @throws UnauthorizedError nếu không có token hoặc token không hợp lệ
+ * @throws UnauthorizedError (401) nếu xác thực thất bại
  */
 export const authenticate = (
   req: Request,
@@ -71,51 +80,53 @@ export const authenticate = (
   next: NextFunction
 ): void => {
   try {
-    // 1. Lấy Authorization header
-    // Format: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+    // 1. Lấy Authorization header từ request
+    // Format chuẩn: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
     const authHeader = req.headers.authorization;
 
-    // 2. Kiểm tra header có tồn tại và đúng format không
+    // 2. Kiểm tra header có tồn tại và đúng format "Bearer ..." không
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       throw new UnauthorizedError('Access token không được cung cấp');
     }
 
-    // 3. Tách token ra khỏi "Bearer "
-    // "Bearer abc123".split(' ') = ['Bearer', 'abc123']
+    // 3. Tách lấy chuỗi token (bỏ chữ "Bearer " ở đầu)
+    // "Bearer abc123xyz".split(' ') -> ['Bearer', 'abc123xyz'] -> lấy phần tử [1]
     const token = authHeader.split(' ')[1];
 
-    // 4. Verify token
-    // jwt.verify sẽ:
-    // - Kiểm tra signature (có bị thay đổi không)
-    // - Kiểm tra expiration (còn hạn không)
-    // - Decode payload
+    // 4. Verify token bằng Secret Key
+    // jwt.verify() sẽ tự động kiểm tra:
+    // - Tính toàn vẹn: Token có bị sửa đổi không? (dựa vào signature)
+    // - Thời hạn: Token còn hạn không? (dựa vào exp)
     const payload = jwt.verify(
       token,
-      process.env.ACCESS_TOKEN_SECRET!
+      process.env.ACCESS_TOKEN_SECRET! // Dấu ! để bảo TS là biến này chắc chắn có
     ) as JwtPayload;
 
-    // 5. Gắn user info vào request
-    // Các middleware/controller sau có thể truy cập qua req.user
+    // 5. Gắn thông tin User vào Request object
+    // Để các middleware/controller phía sau biết user này là ai
     req.user = {
       userId: payload.userId,
       role: payload.role,
     };
 
-    // 6. Tiếp tục đến middleware/handler tiếp theo
+    // 6. Cho phép đi tiếp sang middleware/controller tiếp theo
     next();
   } catch (error) {
-    // Xử lý các loại lỗi JWT
+    // Xử lý các loại lỗi cụ thể của JWT lib để trả về thông báo rõ ràng hơn
+    
     if (error instanceof jwt.TokenExpiredError) {
+      // Lỗi hết hạn token (thường gặp nhất) -> FE sẽ catch 401 để gọi refresh token
       next(new UnauthorizedError('Access token đã hết hạn'));
       return;
     }
 
     if (error instanceof jwt.JsonWebTokenError) {
+      // Lỗi token sai format, sai chữ ký, bị sửa đổi...
       next(new UnauthorizedError('Access token không hợp lệ'));
       return;
     }
 
-    // Lỗi khác (đã throw UnauthorizedError ở trên)
+    // Các lỗi khác -> Throw tiếp cho Global Error Handler xử lý
     next(error);
   }
 };
@@ -123,33 +134,33 @@ export const authenticate = (
 /**
  * AUTHORIZE MIDDLEWARE
  * 
- * Kiểm tra user có đúng role được phép không
- * PHẢI dùng SAU authenticate middleware
+ * Nhiệm vụ: Phân quyền (Authorization)
+ * Sau khi biết "Ai đang gọi" (Authentication), kiểm tra xem người đó "Có được phép làm không?"
  * 
- * @param allowedRoles - Danh sách roles được phép
- * @returns Middleware function
+ * ⚠️ QUAN TRỌNG: Phải đặt SAU middleware `authenticate`
+ * vì nó cần `req.user` (được tạo ra bởi `authenticate`)
+ * 
+ * @param allowedRoles - Danh sách các role được phép (VD: 'ADMIN', 'STAFF')
  * 
  * @example
- * // Chỉ ADMIN
- * router.delete('/users/:id', authenticate, authorize('ADMIN'), ...)
- * 
- * // ADMIN hoặc STAFF
- * router.put('/orders/:id', authenticate, authorize('ADMIN', 'STAFF'), ...)
+ * // Chỉ ADMIN mới được xóa user
+ * router.delete('/users/:id', authenticate, authorize('ADMIN'), userController.delete);
  */
 export const authorize = (...allowedRoles: string[]) => {
   return (req: Request, _res: Response, next: NextFunction): void => {
-    // Kiểm tra đã authenticate chưa
+    // Safety check: Đảm bảo authenticate đã chạy trước
     if (!req.user) {
-      next(new UnauthorizedError('Chưa đăng nhập'));
+      next(new UnauthorizedError('Chưa đăng nhập (Thiếu authentication middleware)'));
       return;
     }
 
-    // Kiểm tra role có nằm trong danh sách được phép không
+    // Kiểm tra Role của user có nằm trong danh sách được phép không
     if (!allowedRoles.includes(req.user.role)) {
       next(new ForbiddenError('Bạn không có quyền thực hiện hành động này'));
       return;
     }
 
+    // Cấp quyền thành công -> đi tiếp
     next();
   };
 };
@@ -157,12 +168,13 @@ export const authorize = (...allowedRoles: string[]) => {
 /**
  * OPTIONAL AUTHENTICATE
  * 
- * Giống authenticate nhưng KHÔNG throw error nếu không có token
- * Dùng cho các endpoint public nhưng cần biết user nếu đã login
+ * Phiên bản "dễ tính" của authenticate.
+ * - Có token hợp lệ -> Gắn user info vào req
+ * - Không có token hoặc token lỗi -> KHÔNG báo lỗi, cứ cho đi tiếp (req.user = undefined)
  * 
- * @example
- * // Xem sản phẩm - ai cũng xem được, nhưng nếu login thì hiện thêm info
- * router.get('/products/:id', optionalAuth, controller.getProduct);
+ * Dùng cho: Các trang Public nhưng có nội dung cá nhân hóa (VD: Trang chủ, Chi tiết sản phẩm)
+ * - Khách vãng lai: Xem giá thường
+ * - User VIP: Xem giá khuyến mãi (nếu logic yêu cầu)
  */
 export const optionalAuth = (
   req: Request,
@@ -172,8 +184,8 @@ export const optionalAuth = (
   try {
     const authHeader = req.headers.authorization;
 
+    // Không có header -> Coi như khách vãng lai, cho qua
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      // Không có token → không sao, tiếp tục
       return next();
     }
 
@@ -191,7 +203,8 @@ export const optionalAuth = (
 
     next();
   } catch {
-    // Token không hợp lệ → bỏ qua, tiếp tục như guest
+    // Token lỗi (hết hạn/sai) -> Coi như chưa login, KHÔNG throw error
+    // Chỉ đơn giản là req.user sẽ là undefined
     next();
   }
 };

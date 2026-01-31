@@ -1,5 +1,34 @@
+// =============================================================================
+// PRISMA SCHEMA - Cấu trúc Database (MySQL)
+// =============================================================================
+//
+// File này định nghĩa toàn bộ cấu trúc dữ liệu của ứng dụng.
+//
+// 🏗️ DATA MODEL OVERVIEW:
+//
+// [USER] 1 --- n [SESSION]
+//   |
+//   +---- 1 --- n [ADDRESS]
+//   +---- 1 --- n [ORDER]
+//   +---- 1 --- n [REVIEW]
+//   +---- 1 --- n [CART]
+//
+// [PRODUCT] 1 --- n [PRODUCT_IMAGE]
+//    |
+//    +---- n --- 1 [CATEGORY]
+//    +---- 1 --- n [REVIEW]
+//    +---- 1 --- n [ORDER_DETAIL]
+//
+// [ORDER] 1 --- n [ORDER_DETAIL]
+//    |
+//    +---- 1 --- n [TRANSACTION]
+//
+// =============================================================================
+
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  engineType    = "binary"
+  binaryTargets = ["native", "rhel-openssl-1.0.x", "rhel-openssl-1.1.x"]
 }
 
 datasource db {
@@ -10,38 +39,39 @@ datasource db {
 // ============================================================
 //                          ENUMS
 // ============================================================
+// Định nghĩa các tập giá trị cố định (tiết kiệm storage & type-safe)
 
 enum UserStatus {
-  ACTIVE
-  INACTIVE
-  BANNED
+  ACTIVE // Hoạt động bình thường
+  INACTIVE // Chưa kích hoạt (email verify)
+  BANNED // Bị khóa
 }
 
 enum CategoryType {
-  PRODUCT
-  NEWS
-  PAGE
+  PRODUCT // Danh mục sản phẩm (Trà xanh, Hồng trà...)
+  NEWS // Danh mục tin tức (Khuyến mãi, Kiến thức...)
+  PAGE // Danh mục trang tĩnh
 }
 
 enum ProductStatus {
-  DRAFT
-  PUBLISHED
-  HIDDEN
-  DISCONTINUED
+  DRAFT // Nháp
+  PUBLISHED // Đang bán
+  HIDDEN // Tạm ẩn
+  DISCONTINUED // Ngừng kinh doanh
 }
 
 enum OrderStatus {
-  PENDING
-  CONFIRMED
-  SHIPPING
-  COMPLETED
-  CANCELLED
+  PENDING // Mới đặt, chờ xác nhận
+  CONFIRMED // Đã xác nhận, đang đóng gói
+  SHIPPING // Đang giao
+  COMPLETED // Giao thành công
+  CANCELLED // Đã hủy
 }
 
 enum PaymentStatus {
-  UNPAID
-  PAID
-  REFUNDED
+  UNPAID // Chưa thanh toán
+  PAID // Đã thanh toán
+  REFUNDED // Đã hoàn tiền
 }
 
 enum TransactionStatus {
@@ -64,9 +94,9 @@ model Role {
   id          Int     @id @default(autoincrement())
   name        String  @unique @db.VarChar(50)
   description String? @db.VarChar(255)
-  
+
   users User[]
-  
+
   @@map("roles")
 }
 
@@ -79,18 +109,19 @@ model User {
   phone        String?    @unique @db.VarChar(15)
   dateOfBirth  DateTime?  @map("date_of_birth") @db.Date
   status       UserStatus @default(ACTIVE)
-  roleId       Int        @map("role_id")
+  roleId       Int        @default(1) @map("role_id")
   createdAt    DateTime   @default(now()) @map("created_at")
   updatedAt    DateTime   @updatedAt @map("updated_at")
-  
-  role      Role          @relation(fields: [roleId], references: [id])
-  sessions  Session[]
-  addresses UserAddress[]
-  orders    Order[]
-  reviews   Review[]
-  news      News[]
-  carts     Cart[]
-  
+
+  role          Role           @relation(fields: [roleId], references: [id])
+  sessions      Session[]
+  addresses     UserAddress[]
+  orders        Order[]
+  reviews       Review[]
+  news          News[]
+  carts         Cart[]
+  notifications Notification[]
+
   @@index([status])
   @@index([roleId])
   @@index([phone])
@@ -105,9 +136,9 @@ model UserAddress {
   address       String   @db.VarChar(500)
   isDefault     Boolean  @default(false) @map("is_default")
   createdAt     DateTime @default(now()) @map("created_at")
-  
+
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
+
   @@index([userId])
   @@map("user_addresses")
 }
@@ -120,9 +151,9 @@ model Session {
   revoked          Boolean  @default(false)
   createdAt        DateTime @default(now()) @map("created_at")
   updatedAt        DateTime @updatedAt @map("updated_at")
-  
+
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
+
   @@index([userId, revoked])
   @@index([expiresAt])
   @@map("sessions")
@@ -140,12 +171,12 @@ model Category {
   parentId    String?      @map("parent_id") @db.VarChar(30)
   isActive    Boolean      @default(true) @map("is_active")
   type        CategoryType @default(PRODUCT)
-  
+
   parent   Category?  @relation("CategoryHierarchy", fields: [parentId], references: [id])
   children Category[] @relation("CategoryHierarchy")
   products Product[]
   news     News[]
-  
+
   @@index([type])
   @@index([parentId])
   @@map("categories")
@@ -165,13 +196,13 @@ model Product {
   status        ProductStatus @default(DRAFT)
   createdAt     DateTime      @default(now()) @map("created_at")
   updatedAt     DateTime      @updatedAt @map("updated_at")
-  
+
   category     Category?      @relation(fields: [categoryId], references: [id])
   images       ProductImage[]
   cartItems    CartItem[]
   orderDetails OrderDetail[]
   reviews      Review[]
-  
+
   @@index([categoryId, status])
   @@index([status, createdAt])
   @@index([price])
@@ -184,9 +215,9 @@ model ProductImage {
   imageUrl    String  @map("image_url") @db.VarChar(500)
   isThumbnail Boolean @default(false) @map("is_thumbnail")
   sortOrder   Int     @default(0) @map("sort_order")
-  
+
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
-  
+
   @@index([productId])
   @@map("product_images")
 }
@@ -196,14 +227,14 @@ model ProductImage {
 // ============================================================
 
 model Cart {
-  id        String     @id @default(cuid()) @db.VarChar(30)
-  userId    String?    @unique @map("user_id") @db.VarChar(30)
-  createdAt DateTime   @default(now()) @map("created_at")
-  updatedAt DateTime   @updatedAt @map("updated_at")
-  
+  id        String   @id @default(cuid()) @db.VarChar(30)
+  userId    String?  @unique @map("user_id") @db.VarChar(30)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
   user  User?      @relation(fields: [userId], references: [id])
   items CartItem[]
-  
+
   @@map("carts")
 }
 
@@ -213,10 +244,10 @@ model CartItem {
   productId String   @map("product_id") @db.VarChar(30)
   quantity  Int      @default(1)
   addedAt   DateTime @default(now()) @map("added_at")
-  
+
   cart    Cart    @relation(fields: [cartId], references: [id], onDelete: Cascade)
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
-  
+
   @@unique([cartId, productId])
   @@map("cart_items")
 }
@@ -234,11 +265,11 @@ model Order {
   shippingPhone   String        @map("shipping_phone") @db.VarChar(20)
   note            String?       @db.VarChar(500)
   createdAt       DateTime      @default(now()) @map("created_at")
-  
+
   user         User?         @relation(fields: [userId], references: [id])
   details      OrderDetail[]
   transactions Transaction[]
-  
+
   @@index([userId, status])
   @@index([status, createdAt])
   @@index([paymentStatus])
@@ -251,10 +282,10 @@ model OrderDetail {
   productId String  @map("product_id") @db.VarChar(30)
   price     Decimal @db.Decimal(15, 2)
   quantity  Int
-  
+
   order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product Product @relation(fields: [productId], references: [id])
-  
+
   @@index([orderId])
   @@index([productId])
   @@map("order_details")
@@ -269,9 +300,9 @@ model Transaction {
   status          TransactionStatus @default(PENDING)
   paidAt          DateTime          @default(now()) @map("paid_at")
   description     String?           @db.VarChar(500)
-  
+
   order Order @relation(fields: [orderId], references: [id])
-  
+
   @@index([orderId])
   @@index([status])
   @@map("transactions")
@@ -292,10 +323,10 @@ model News {
   imageUrl    String?    @map("image_url") @db.VarChar(500)
   publishedAt DateTime   @default(now()) @map("published_at")
   status      NewsStatus @default(PUBLISHED)
-  
+
   category Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   author   User      @relation(fields: [authorId], references: [id])
-  
+
   @@index([status, publishedAt])
   @@index([categoryId])
   @@index([authorId])
@@ -309,11 +340,47 @@ model Review {
   rating      Int
   commentText String?  @map("comment_text") @db.VarChar(1000)
   createdAt   DateTime @default(now()) @map("created_at")
-  
+
   user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
-  
+
   @@unique([userId, productId])
   @@index([productId, rating])
   @@map("reviews")
+}
+
+// ============================================================
+//                      NOTIFICATIONS
+// ============================================================
+
+enum NotificationType {
+  ORDER_NEW
+  ORDER_STATUS
+  ORDER_CANCELLED
+  STOCK_LOW
+  STOCK_OUT
+  REVIEW_NEW
+  USER_REGISTERED
+  ACCOUNT_LOCKED
+  ACCOUNT_UNLOCKED
+  PROMOTION
+  SYSTEM
+}
+
+model Notification {
+  id        String           @id @default(cuid()) @db.VarChar(30)
+  userId    String?          @map("user_id") @db.VarChar(30) // null = admin notification
+  type      NotificationType
+  title     String           @db.VarChar(255)
+  message   String?          @db.VarChar(1000)
+  data      Json? // JSON metadata
+  isRead    Boolean          @default(false) @map("is_read")
+  createdAt DateTime         @default(now()) @map("created_at")
+  readAt    DateTime?        @map("read_at")
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+  @@index([createdAt])
+  @@map("notifications")
 }

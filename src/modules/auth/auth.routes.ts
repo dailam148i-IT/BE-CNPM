@@ -31,7 +31,7 @@ import {
   loginSchema,
   refreshTokenSchema,
   changePasswordSchema,
-} from './auth.validation.js';
+} from './auth.schema.js';
 
 // Tạo Router instance
 const router = Router();

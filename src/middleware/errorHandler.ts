@@ -121,6 +121,21 @@ export class ValidationError extends AppError {
 }
 
 /**
+ * BadRequestError - Lỗi 400
+ * Dùng khi request không hợp lệ (logic error, duplicate data, etc.)
+ * 
+ * @example
+ * if (existingSlug) {
+ *   throw new BadRequestError('Slug đã tồn tại');
+ * }
+ */
+export class BadRequestError extends AppError {
+  constructor(message: string = 'Bad request') {
+    super(message, 400);
+  }
+}
+
+/**
  * =============================================================================
  * PHẦN 2: ERROR HANDLER MIDDLEWARE
  * =============================================================================

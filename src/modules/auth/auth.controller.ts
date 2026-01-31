@@ -3,18 +3,19 @@
  * AUTH.CONTROLLER.TS - Xử lý Request/Response cho Auth
  * =============================================================================
  * 
- * Controller là cầu nối giữa Routes và Service
+ * Controller là cầu nối giữa Routes và Service.
+ * 
+ * 🏗️ MVC DATA FLOW:
+ *    Request  ---> [Routes] ---> [Controller] ---> [Service] ---> [Database]
+ *                                     |
+ *    Response <-----------------------|
  * 
  * NHIỆM VỤ:
- * - Nhận request từ client
- * - Extract dữ liệu từ req.body, req.params, req.cookies
- * - Gọi Service xử lý logic
- * - Trả response về client
- * - Set cookies (refresh token)
- * 
- * KHÔNG LÀM:
- * - Business logic (đó là việc của Service)
- * - Truy vấn database trực tiếp
+ * 1. Nhận request từ client (req)
+ * 2. Validate/Extract dữ liệu (body, params, cookies)
+ * 3. Gọi Service xử lý logic (authService)
+ * 4. Trả response về client (res)
+ * 5. Quản lý HTTP Cookies (Refresh Token)
  */
 
 import { Request, Response, NextFunction } from 'express';
@@ -24,56 +25,36 @@ import { success } from '../../utils/response.js';
 /**
  * Cookie options cho Refresh Token
  * 
- * - httpOnly: JavaScript không thể access (chống XSS)
- * - secure: Chỉ gửi qua HTTPS (production)
- * - sameSite: Chống CSRF attacks
- * - maxAge: Thời gian sống của cookie (ms)
+ * - httpOnly: TRUE -> JavaScript client KHÔNG đọc được (chống XSS)
+ * - secure: TRUE (Prod) -> Chỉ gửi qua HTTPS
+ * - sameSite: 'strict' -> Chỉ gửi khi request từ cùng domain (chống CSRF)
  */
 const REFRESH_TOKEN_COOKIE_OPTIONS = {
   httpOnly: true,
   secure: process.env.NODE_ENV === 'production',
   sameSite: 'strict' as const,
   maxAge: 7 * 24 * 60 * 60 * 1000, // 7 ngày
-  path: '/', // Cookie available cho toàn bộ domain
+  path: '/',
 };
 
-/**
- * AUTH CONTROLLER OBJECT
- * 
- * Mỗi method tương ứng với 1 endpoint
- */
 export const authController = {
   /**
    * ===========================================================================
    * REGISTER - POST /api/auth/register
    * ===========================================================================
    * 
-   * Đăng ký tài khoản mới
-   * 
-   * Request body:
-   * {
-   *   "username": "john_doe",
-   *   "email": "john@example.com",
-   *   "password": "123456",
-   *   "fullName": "John Doe",
-   *   "phone": "0901234567"
-   * }
-   * 
-   * Response:
-   * {
-   *   "success": true,
-   *   "data": { "id": "...", "username": "...", ... }
-   * }
+   * 🔄 FLOW:
+   * 1. Client gửi JSON user info
+   * 2. Middleware validate input (Joi/Zod)
+   * 3. Controller gọi AuthService.register
+   * 4. AuthService tạo user trong DB
+   * 5. Trả về thông tin user (đã ẩn password)
    */
   async register(req: Request, res: Response, next: NextFunction) {
     try {
-      // Gọi service xử lý (req.body đã được validate bởi middleware)
       const user = await authService.register(req.body);
-
-      // Trả về với status 201 (Created)
-      success(res, user, 201);
+      success(res, user, 201); // 201 Created
     } catch (error) {
-      // Chuyển lỗi cho error handler
       next(error);
     }
   },
@@ -83,35 +64,23 @@ export const authController = {
    * LOGIN - POST /api/auth/login
    * ===========================================================================
    * 
-   * Đăng nhập
-   * 
-   * Request body:
-   * {
-   *   "email": "john@example.com",
-   *   "password": "123456"
-   * }
-   * 
-   * Response:
-   * {
-   *   "success": true,
-   *   "data": {
-   *     "user": { ... },
-   *     "accessToken": "eyJ..."
-   *   }
-   * }
-   * 
-   * + Set-Cookie: refreshToken (httpOnly)
+   * 🔄 FLOW:
+   * 1. Client gửi Email + Password
+   * 2. AuthService kiểm tra & tạo 2 tokens:
+   *    - Access Token (ngắn hạn, 15p)
+   *    - Refresh Token (dài hạn, 7 ngày)
+   * 3. Controller:
+   *    - Trả Access Token trong JSON response
+   *    - Set Refresh Token vào HTTP-Only Cookie (An toàn hơn lưu LocalStorage)
    */
   async login(req: Request, res: Response, next: NextFunction) {
     try {
       const result = await authService.login(req.body);
 
-      // Set refresh token vào cookie
-      // Client không cần xử lý, browser tự gửi trong mỗi request
+      // Set refresh token vào cookie an toàn
       res.cookie('refreshToken', result.refreshToken, REFRESH_TOKEN_COOKIE_OPTIONS);
 
-      // Trả về user và access token
-      // KHÔNG trả refresh token trong body (đã có trong cookie)
+      // Chỉ trả về Access Token cho client dùng ngay
       success(res, {
         user: result.user,
         accessToken: result.accessToken,
@@ -126,23 +95,16 @@ export const authController = {
    * REFRESH TOKEN - POST /api/auth/refresh
    * ===========================================================================
    * 
-   * Tạo mới Access Token khi token cũ hết hạn
-   * 
-   * Refresh token được lấy từ:
-   * 1. Cookie (web browser) - tự động
-   * 2. Request body (mobile app) - manual
-   * 
-   * Response:
-   * {
-   *   "success": true,
-   *   "data": { "accessToken": "eyJ..." }
-   * }
-   * 
-   * + Set-Cookie: refreshToken mới (token rotation)
+   * 🔄 FLOW (Token Rotation):
+   * 1. Access Token hết hạn -> Client gọi API Refresh
+   * 2. Browser tự gửi Cookie chứa Refresh Token cũ
+   * 3. Server verify & hủy Refresh Token cũ
+   * 4. Server cấp cặp Token MỚI
+   * 5. Client nhận Access Token mới & Browser cập nhật Cookie mới
    */
   async refresh(req: Request, res: Response, next: NextFunction) {
     try {
-      // Lấy refresh token từ cookie hoặc body
+      // Ưu tiên lấy từ Cookie (An toàn), fallback sang Body (Mobile App)
       const refreshToken = req.cookies.refreshToken || req.body.refreshToken;
 
       if (!refreshToken) {
@@ -151,10 +113,9 @@ export const authController = {
 
       const result = await authService.refreshToken(refreshToken);
 
-      // Set refresh token mới (Token Rotation)
+      // Token Rotation: Cập nhật cookie với token mới
       res.cookie('refreshToken', result.refreshToken, REFRESH_TOKEN_COOKIE_OPTIONS);
 
-      // Trả về access token mới
       success(res, {
         accessToken: result.accessToken,
       });
@@ -168,26 +129,17 @@ export const authController = {
    * LOGOUT - POST /api/auth/logout
    * ===========================================================================
    * 
-   * Đăng xuất - Revoke refresh token
-   * 
-   * Yêu cầu: Phải đăng nhập (có access token)
-   * 
-   * Response:
-   * {
-   *   "success": true,
-   *   "data": { "message": "Đăng xuất thành công" }
-   * }
-   * 
-   * + Clear cookie refreshToken
+   * 1. Revoke token trong DB (Logic server)
+   * 2. Xóa Cookie ở Client (Logic browser)
    */
   async logout(req: Request, res: Response, next: NextFunction) {
     try {
       const refreshToken = req.cookies.refreshToken;
       
-      // req.user được gắn bởi authenticate middleware
+      // Revoke trong DB để token không thể dùng lại dù chưa hết hạn
       await authService.logout(refreshToken, req.user!.userId);
 
-      // Xóa cookie
+      // Xóa Cookie phía Client
       res.clearCookie('refreshToken', {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
@@ -205,19 +157,10 @@ export const authController = {
    * ===========================================================================
    * GET PROFILE - GET /api/auth/me
    * ===========================================================================
-   * 
-   * Lấy thông tin người dùng hiện tại
-   * 
-   * Yêu cầu: Đã đăng nhập
-   * 
-   * Response:
-   * {
-   *   "success": true,
-   *   "data": { "id": "...", "username": "...", "email": "...", ... }
-   * }
    */
   async getProfile(req: Request, res: Response, next: NextFunction) {
     try {
+      // req.user có được nhờ middleware `authenticate`
       const user = await authService.getProfile(req.user!.userId);
       success(res, user);
     } catch (error) {
@@ -229,29 +172,12 @@ export const authController = {
    * ===========================================================================
    * CHANGE PASSWORD - PUT /api/auth/password
    * ===========================================================================
-   * 
-   * Đổi mật khẩu
-   * 
-   * Request body:
-   * {
-   *   "currentPassword": "old123",
-   *   "newPassword": "new456",
-   *   "confirmPassword": "new456"
-   * }
-   * 
-   * Response:
-   * {
-   *   "success": true,
-   *   "data": { "message": "Đổi mật khẩu thành công" }
-   * }
-   * 
-   * + Clear cookie (bắt đăng nhập lại)
    */
   async changePassword(req: Request, res: Response, next: NextFunction) {
     try {
       await authService.changePassword(req.user!.userId, req.body);
 
-      // Xóa cookie refresh token (bắt đăng nhập lại)
+      // Đổi pass xong bắt đăng nhập lại -> Xóa cookie
       res.clearCookie('refreshToken', {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',

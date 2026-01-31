@@ -25,21 +25,18 @@ import {
   UnauthorizedError, 
   NotFoundError 
 } from '../../middleware/errorHandler.js';
-import type { RegisterDto, LoginDto, ChangePasswordDto } from './auth.validation.js';
+import type { RegisterDto, LoginDto, ChangePasswordDto } from './auth.schema.js';
 
 /**
  * Interface cho kết quả đăng nhập
- * Định nghĩa rõ dữ liệu trả về
+ * CHỈ trả về data tối thiểu cần thiết (bảo mật)
  */
 interface LoginResult {
   user: {
     id: string;
     username: string;
     email: string;
-    fullName: string | null;
-    phone: string | null;
     role: {
-      id: number;
       name: string;
     };
   };
@@ -90,6 +87,17 @@ export const authService = {
 
     if (existingUsername) {
       throw new AppError('Username đã được sử dụng', 400);
+    }
+
+    // 2.5. Kiểm tra phone (nếu có)
+    if (data.phone) {
+      const existingPhone = await prisma.user.findUnique({
+        where: { phone: data.phone },
+      });
+
+      if (existingPhone) {
+        throw new AppError('Số điện thoại đã được sử dụng', 400);
+      }
     }
 
     // 3. Hash password
@@ -202,11 +210,17 @@ export const authService = {
       },
     });
 
-    // 7. Trả về (loại bỏ password)
-    const { passwordHash: _, ...safeUser } = user;
-
+    // 7. Trả về CHỈ data tối thiểu cần thiết (bảo mật)
+    // KHÔNG trả về: phone, fullName, dateOfBirth, createdAt, updatedAt, roleId
     return {
-      user: safeUser,
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        role: {
+          name: user.role.name,
+        },
+      },
       accessToken,
       refreshToken,
     };
